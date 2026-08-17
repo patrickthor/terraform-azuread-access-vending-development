@@ -1,0 +1,83 @@
+# ==============================================================================
+# Terraform
+# ==============================================================================
+
+# Provider-binærer og modulcache. Stor (hundrevis av MB) og reproduserbar.
+**/.terraform/*
+
+# Lokal state. Repoet kjører uten backend, så disse vil inneholde
+# subscription-IDer, gruppe-object-IDer, UPN-er og PIM-policy i klartekst.
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Plan-filer. Inneholder samme sensitive verdier som state.
+*.tfplan
+*.tfplan.*
+plan.out
+
+# Crash-logger fra Terraform og providere.
+crash.log
+crash.*.log
+
+# ------------------------------------------------------------------------------
+# Variabelfiler
+#
+# terraform.tfvars inneholder reelle subscription-IDer, systemeier-UPN,
+# eligible_user_principal_names og navn på godkjennergrupper. Skal aldri
+# committes. Eksempelfila med placeholders skal derimot ligge i git.
+# ------------------------------------------------------------------------------
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Backend-konfigurasjon. Ikke hemmelig, men miljospesifikk — en committet
+# backend.hcl gjør at neste person kjører mot feil state uten å merke det.
+backend.hcl
+
+# CLI-konfig som kan inneholde credentials eller mirror-oppsett.
+.terraformrc
+terraform.rc
+
+# ------------------------------------------------------------------------------
+# Lock-filer
+#
+# Rot-modulens .terraform.lock.hcl SKAL committes — den pinner provider-
+# versjoner. Undermoduler pinner ikke, så deres lock-filer holdes ute.
+# ------------------------------------------------------------------------------
+modules/**/.terraform.lock.hcl
+examples/**/.terraform.lock.hcl
+bootstrap/.terraform.lock.hcl
+
+# ==============================================================================
+# Credentials og miljø
+# ==============================================================================
+
+.env
+.env.*
+*.pem
+*.key
+azure-credentials.json
+sp-credentials.json
+
+# ==============================================================================
+# Verktøy og OS
+# ==============================================================================
+
+# Mellomfiler fra diagram-generering. PNG committes bevisst.
+generated-diagrams/*.dot
+generated-diagrams/*.drawio
+
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# ==============================================================================
+# Referansemateriale
+# ==============================================================================
+
+# Precursor-modulen er referanse, ikke en del av dette repoet. 225 MB, hvorav
+# 224 MB er en provider-binær og et nøstet .git under bootstrap/.terraform/.
+precursor-module/

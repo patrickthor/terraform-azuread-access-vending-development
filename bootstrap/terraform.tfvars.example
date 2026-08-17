@@ -1,0 +1,40 @@
+# ==============================================================================
+# Bootstrap — copy to terraform.tfvars and fill in
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Nothing here is secret, but the file is covered by .gitignore because *.tfvars
+# is. That is fine — bootstrap is run locally by an admin.
+# ==============================================================================
+
+identity_name       = "id-access-vending-poc-bvt"
+resource_group_name = "rg-identity-poc"
+location            = "norwayeast"
+
+# false expects the resource group to already exist. Set true to create it here.
+create_resource_group = false
+
+# ------------------------------------------------------------------------------
+# OIDC federation
+#
+# The credential is bound to ONE branch. If it points to a branch where anyone
+# can push, anyone with push access can manage access in the tenant. Use a
+# protected branch.
+# ------------------------------------------------------------------------------
+
+github_org    = "REPLACE-org"
+github_repo   = "terraform-azuread-access-vending"
+github_branch = "main"
+
+# ------------------------------------------------------------------------------
+# State storage
+#
+# Resource ID of the account holding tfstate. The identity gets
+# "Storage Blob Data Contributor" on it, so the backend works with
+# use_azuread_auth = true.
+#
+# Set to null if the account is managed elsewhere — then the role binding must
+# be done manually.
+# ------------------------------------------------------------------------------
+
+state_storage_account_id = "/subscriptions/REPLACE-sub-id/resourceGroups/rg-tfstate-poc/providers/Microsoft.Storage/storageAccounts/sttfstatepocbvt"
