@@ -1,0 +1,28 @@
+# ==============================================================================
+# Backend configuration — copy to backend.hcl and fill in
+#
+#   cp backend.hcl.example backend.hcl
+#   terraform init -backend-config=backend.hcl
+#
+# backend.hcl is covered by .gitignore. The values here are not secret, but they
+# are environment-specific, and a committed backend.hcl causes the next person
+# to run against the wrong state without noticing.
+#
+# The storage account is created by bootstrap/ — or reuse an existing one. State
+# for this repo is kept in its own key, not shared with other modules.
+# ==============================================================================
+
+resource_group_name  = "rg-tfstate"
+storage_account_name = "sttfstaterunner115"
+container_name       = "idstate"
+key                  = "access-vending.tfstate"
+
+# Authentication against the storage account is inherited from the environment:
+#
+#   Locally     az login, with ARM_TENANT_ID set
+#   CI          OIDC via managed identity — see examples/github-consumption/
+#
+# use_azuread_auth = true lets you use RBAC on the storage account instead of
+# access keys. Recommended, but requires that the identity has
+# "Storage Blob Data Contributor" on the account or container.
+use_azuread_auth = true

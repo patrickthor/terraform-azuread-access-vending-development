@@ -1,0 +1,258 @@
+# ==============================================================================
+# examples/complete — all three JIT mechanisms active
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Replace everything marked REPLACE. The field reference is in
+# modules/access-vending/README.md — it is INTENTIONALLY not repeated here,
+# because everything in this file gets copied into your own tfvars and is then
+# never updated.
+#
+# ------------------------------------------------------------------------------
+# THE THREE MECHANISMS, BRIEFLY
+#
+#   azure_pim       Azure RBAC. The group is NOT PIM-managed; membership is
+#   (default)       active. The user activates the ROLE.
+#
+#   pim_for_groups  AWS, GCP, GitHub. The group IS PIM-managed. The user activates
+#                   the MEMBERSHIP. Terraform does NOT connect the group to the
+#                   target cloud — that is done with SCIM on the cloud side.
+#
+#   entra_role      Entra directory roles. The group becomes role-assignable and
+#                   bound to the role. Terraform CANNOT set the activation rules.
+#
+# ------------------------------------------------------------------------------
+# WHO APPROVES
+#
+#   approval_type = "self"    no approver
+#                   "owner"   system owner list, as named users
+#                   "dual"    system owners AND the approver group (one signs)
+#
+# The approver group is SEEDED with the systemeier by this repo, so "dual" roles
+# work from the first apply. Additional peer approvers should be managed via
+# access package in repo 2.
+#
+# READ THIS: an approver cannot approve their own request. If the systemeier is
+# the only member of the approver group, they cannot activate their own "dual"
+# role — the request sits until it times out after 24 hours. Add at least one
+# more approver before testing activation.
+# ==============================================================================
+
+tenant_id                = "REPLACE-tenant-guid"
+provider_subscription_id = "REPLACE-subscription-guid"
+
+# Default prefix when a scope does not set `cloud` itself. Lowercase letters and
+# digits only — no hyphens.
+cloud_prefix = "azure"
+
+# false on purpose. A group owner can manage membership directly, bypassing the
+# access package, unseen in any plan. Note that false does not mean "no owners":
+# the identity running Terraform becomes owner regardless.
+set_systemeier_as_group_owner = false
+
+# Wait time for Graph propagation before PIM resources are created. Applies to
+# pim_for_groups AND entra_role.
+pim_group_propagation_delay = "30s"
+
+access_scopes = {
+
+  # ============================================================================
+  # M2 — AZURE. jit_mechanism = "azure_pim" is default and can be omitted.
+  #
+  # Requires cloud = "azure", azure_role and scope_id as subscription GUID.
+  # ============================================================================
+
+  "platform-prod" = {
+    cloud    = "azure"
+    scope_id = "REPLACE-subscription-guid"
+
+    # One or more. All become approvers with "owner" and "dual". Must exist in
+    # the tenant — looked up with data "azuread_user".
+    #
+    # Multiple system owners give BROADER COVERAGE, not stricter control: they
+    # all sit in the same approval_stage, so it is enough that one signs.
+    # The provider schema only allows one stage.
+    systemeier = ["REPLACE-eier@example.com", "REPLACE-eier2@example.com"]
+
+    roles = {
+      # Permanent read access. No activation, no approval.
+      # The time limit comes from the expiry on the access package assignment.
+      "reader" = {
+        azure_role       = "Reader"
+        permanent_access = true
+      }
+
+      # Requires activation. Approved by azure-platform-prod-approvers.
+      "contributor" = {
+        azure_role           = "Contributor"
+        approval_type        = "dual"
+        max_activation_hours = 8
+      }
+
+      # Highest privilege: MFA, short window, both system owners and the group
+      # as approvers. Note that "dual" means ONE of them signs.
+      "owner" = {
+        azure_role           = "Owner"
+        approval_type        = "dual"
+        max_activation_hours = 2
+        require_mfa          = true
+        require_ticket_info  = true
+      }
+    }
+  }
+
+  # ----------------------------------------------------------------------------
+  # Role keys are free strings and need no relation to azure_role.
+  # The role key becomes part of the group name; azure_role is the actual RBAC role.
+  # ----------------------------------------------------------------------------
+
+  "data-prod" = {
+    cloud      = "azure"
+    scope_id   = "REPLACE-subscription-guid"
+    systemeier = ["REPLACE-dataeier@example.com"]
+
+    roles = {
+      "blob-leser" = {
+        azure_role           = "Storage Blob Data Reader"
+        approval_type        = "self"
+        max_activation_hours = 4
+      }
+
+      # eligible_duration_days sets the expiry on the eligibility itself.
+      # 15, 30, 90, 180 or 365. Omitted = permanent eligibility.
+      "nettverksdrift" = {
+        azure_role             = "Network Contributor"
+        approval_type          = "owner"
+        require_mfa            = true
+        eligible_duration_days = 90
+      }
+    }
+  }
+
+  # ============================================================================
+  # M3 — OTHER CLOUDS. jit_mechanism = "pim_for_groups" must be set explicitly.
+  #
+  # Creates groups aws-prod-{role} with PIM-managed membership. Note that the
+  # scope key is "prod" and not "aws-prod" — the prefix comes from `cloud`, so
+  # "aws-prod" would produce aws-aws-prod-admin.
+  #
+  # IMPORTANT: Terraform does NOT connect the group to AWS. The group must be
+  # provisioned there with SCIM from the enterprise application in Entra, and
+  # bound to the permission set there. `target_role` documents what the binding
+  # should be. See the output target_cloud_bindings.
+  #
+  # NOTE ON THE JIT WINDOW: SCIM deprovisioning happens in the regular
+  # incremental cycle, not immediately. The cycle runs every 40 minutes, so an
+  # 8-hour membership can in the worst case give up to 40 minutes of extra
+  # AWS access after Entra has revoked the membership.
+  # ============================================================================
+
+  "prod" = {
+    cloud = "aws"
+
+    # Free string for other clouds — AWS account number. Documentation only;
+    # no resource binds it.
+    scope_id   = "REPLACE-aws-account-id"
+    systemeier = ["REPLACE-skyeier@example.com"]
+
+    roles = {
+      # Self-service read access.
+      "readonly" = {
+        jit_mechanism = "pim_for_groups"
+        target_role   = "ReadOnlyAccess"
+        approval_type = "self"
+      }
+
+      # Full access: approval by system owners, MFA, short window.
+      "admin" = {
+        jit_mechanism        = "pim_for_groups"
+        target_role          = "AdministratorAccess"
+        approval_type        = "owner"
+        max_activation_hours = 4
+        require_mfa          = true
+      }
+
+      # active_assignment_expire_after is the cap on ACTIVE memberships.
+      # P15D, P30D, P90D, P180D, P365D — or "permanent".
+      #
+      # "permanent" allows permanent active memberships and removes the JIT
+      # guarantee for them. It must be written explicitly, as a string: omitting
+      # the field gives P30D, not permanent.
+      "billing" = {
+        jit_mechanism                  = "pim_for_groups"
+        target_role                    = "Billing"
+        approval_type                  = "dual"
+        max_activation_hours           = 2
+        require_mfa                    = true
+        require_ticket_info            = true
+        active_assignment_expire_after = "P15D"
+      }
+    }
+  }
+
+  # ============================================================================
+  # M4 — ENTRA DIRECTORY ROLES. jit_mechanism = "entra_role".
+  #
+  # Requires cloud = "entra". scope_id here is directory_scope_id: "/" for the
+  # entire tenant, or "/administrativeUnits/<guid>".
+  #
+  # ----------------------------------------------------------------------------
+  # READ THIS BEFORE ENABLING
+  #
+  # 1. Terraform CANNOT set MFA, approval or max duration for directory roles.
+  #    There is no policy resource in the azuread provider. The rules must be set
+  #    in the PIM portal. Therefore approval_type, require_mfa,
+  #    require_justification, require_ticket_info and max_activation_hours are
+  #    REJECTED here — they would lie about what applies.
+  #    Check: terraform output entra_activation_governance_gap
+  #
+  # 2. The groups are role-assignable, which is FORCE-REPLACE in Entra. They
+  #    cannot be converted afterwards, and cannot be reused from M2 or M3. Put
+  #    entra_role roles in a SEPARATE scope.
+  #
+  # 3. The role you manage has power over the other mechanisms. Groups
+  #    Administrator can manage membership in all non-role-assignable groups —
+  #    that is, in all M2 and M3 groups — and can rewrite their PIM policies.
+  #    Choose the role with that in mind. Directory Readers below is harmless;
+  #    Groups Administrator is not.
+  #
+  # 4. Requires two Graph permissions beyond M2/M3:
+  #    RoleManagement.ReadWrite.Directory and
+  #    RoleEligibilitySchedule.ReadWrite.Directory.
+  #    bootstrap/grant-graph-permissions.sh covers them.
+  # ============================================================================
+
+  "tenant" = {
+    cloud = "entra"
+
+    # directory_scope_id. "/" is the entire tenant.
+    scope_id   = "/"
+    systemeier = ["REPLACE-identitetseier@example.com"]
+
+    roles = {
+      # Permanent: the role applies as long as the membership lasts.
+      "directoryreader" = {
+        jit_mechanism    = "entra_role"
+        entra_role       = "Directory Readers"
+        permanent_access = true
+      }
+
+      # Eligible: the group becomes eligible, members activate in PIM.
+      # The activation rules are governed by the tenant policy for the role —
+      # not from here.
+      #
+      # Note that for Entra roles, active Privileged Role Administrator and
+      # Global Administrator become default approvers if approval is required
+      # and none are set. This is the opposite of M2 and M3, which have no
+      # default approvers.
+      "groupsadmin" = {
+        jit_mechanism = "entra_role"
+        entra_role    = "Groups Administrator"
+
+        # Justification that follows the eligible request. Graph requires a
+        # non-empty field; the module has a default.
+        eligible_justification = "Vendet av access vending, sak REPLACE-1234"
+      }
+    }
+  }
+}

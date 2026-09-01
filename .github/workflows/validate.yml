@@ -1,0 +1,164 @@
+# ==============================================================================
+# Validate — module CI
+#
+# Runs on every push and pull request. No secrets, no tenant, no Azure login:
+# this proves the module is structurally sound before anyone consumes it.
+#
+# Deployment is deliberately NOT here. This repo is the module source; consumers
+# deploy from their own repo — see examples/github-consumption/.
+# deploy.yml in this directory exists only for the POC tenant.
+# ==============================================================================
+
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: fmt, validate, provider isolation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          # >= 1.9 is a hard floor: the module's validations use cross-variable
+          # references, which do not exist before 1.9.
+          terraform_version: "~> 1.9"
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      # -backend=false everywhere: no state access, so this needs no credentials.
+      #
+      # examples/github-consumption is handled separately below — its module
+      # source is a pinned git tag, which cannot be resolved before that tag is
+      # pushed, and which would hit GitHub on every run if it could.
+      - name: Validate root and module
+        run: |
+          fail=0
+          for d in . modules/access-vending examples/complete bootstrap; do
+            echo "::group::$d"
+            if (cd "$d" && terraform init -backend=false -input=false -no-color >/dev/null 2>&1 && terraform validate -no-color); then
+              echo "OK"
+            else
+              echo "::error::terraform validate failed in $d"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      # The consumption example references the module by pinned git tag, so it
+      # cannot be validated as-is: the tag may not exist yet, and resolving it
+      # would mean a network fetch per run. Validate the example's own HCL —
+      # variables, outputs, provider config — against the local module instead.
+      #
+      # This deliberately does NOT verify that the pinned tag exists. That is a
+      # release-time concern, not a per-commit one.
+      - name: Validate consumption example against the local module
+        run: |
+          work="$(mktemp -d)"
+          rsync -a --exclude='.terraform' --exclude='.terraform.lock.hcl' \
+            examples/github-consumption/ "$work/"
+          rsync -a --exclude='.terraform' --exclude='.terraform.lock.hcl' \
+            modules/access-vending/ "$work/_module/"
+
+          # Swap the pinned git source for the local copy, and drop the backend
+          # block so no credentials are needed.
+          sed -i 's|source = "github.com/.*modules/access-vending?ref=.*"|source = "./_module"|' "$work/main.tf"
+          sed -i 's|^  backend "azurerm" {}|  # backend removed for validation|' "$work/versions.tf"
+
+          grep -n 'source' "$work/main.tf" | head -3
+          (cd "$work" && terraform init -backend=false -input=false -no-color >/dev/null && terraform validate -no-color)
+          echo "OK  consumption example is valid"
+
+      - name: Validate every submodule
+        run: |
+          fail=0
+          for d in modules/access-vending/modules/*/; do
+            echo "::group::$d"
+            if (cd "$d" && terraform init -backend=false -input=false -no-color >/dev/null 2>&1 && terraform validate -no-color); then
+              echo "OK"
+            else
+              echo "::error::terraform validate failed in $d"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      # Provider isolation is an acceptance criterion, not a claim. The cloud-
+      # agnostic submodules must not pull in azurerm — that is what keeps the
+      # AWS/GCP/GitHub path usable without Azure Resource Manager.
+      - name: Verify provider isolation
+        run: |
+          check() {
+            local dir="$1" forbidden="$2"
+            (cd "$dir" && terraform init -backend=false -input=false -no-color >/dev/null 2>&1)
+            if (cd "$dir" && terraform providers 2>/dev/null | grep -q "hashicorp/$forbidden"); then
+              echo "::error::$dir must not require $forbidden"
+              return 1
+            fi
+            echo "OK  $dir has no $forbidden"
+          }
+          fail=0
+          check modules/access-vending/modules/entra-groups      azurerm || fail=1
+          check modules/access-vending/modules/pim-for-groups    azurerm || fail=1
+          check modules/access-vending/modules/pim-group-access  azurerm || fail=1
+          check modules/access-vending/modules/entra-role-access azurerm || fail=1
+          exit $fail
+
+      # A consumer receives only modules/access-vending/. Prove it stands alone:
+      # no relative paths escaping its own tree, and it validates when called
+      # from outside the repo.
+      - name: Verify the module is self-contained
+        run: |
+          if grep -rn '\.\./\.\.' modules/access-vending/ --include='*.tf'; then
+            echo "::error::The module references paths outside its own tree; it would break when consumed by git source."
+            exit 1
+          fi
+          echo "OK  no escaping relative paths"
+
+          work="$(mktemp -d)"
+          rsync -a --exclude='.terraform' --exclude='.terraform.lock.hcl' \
+            modules/access-vending/ "$work/module/"
+          mkdir -p "$work/consumer"
+          cat > "$work/consumer/main.tf" <<'EOF'
+          terraform {
+            required_version = ">= 1.9"
+            required_providers {
+              azuread = { source = "hashicorp/azuread", version = "~> 3.7" }
+              azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
+            }
+          }
+          provider "azuread" { tenant_id = "00000000-0000-0000-0000-000000000000" }
+          provider "azurerm" {
+            features {}
+            subscription_id = "00000000-0000-0000-0000-000000000000"
+          }
+          module "av" {
+            source = "../module"
+            access_scopes = {
+              "prod" = {
+                cloud      = "azure"
+                scope_id   = "11111111-1111-1111-1111-111111111111"
+                systemeier = ["a@example.com"]
+                roles      = { "reader" = { azure_role = "Reader", permanent_access = true } }
+              }
+            }
+          }
+          EOF
+          (cd "$work/consumer" && terraform init -backend=false -input=false -no-color >/dev/null && terraform validate -no-color)
+          echo "OK  module validates as a standalone consumed module"

@@ -1,0 +1,259 @@
+# ==============================================================================
+# Deploy — POC tenant only
+#
+# This repo is the MODULE SOURCE. Consumers should not deploy from here; they
+# copy examples/github-consumption/ into their own repo and deploy from there.
+# This workflow exists so the POC tenant can be driven from CI.
+#
+# Structural validation lives in validate.yml, which runs on every push and
+# needs no credentials.
+#
+# Auth: managed identity on the self-hosted ACI runner. ARM_CLIENT_ID is
+# injected into the container by the scaler function and holds the client ID of
+# the runner's user-assigned managed identity.
+#
+# ------------------------------------------------------------------------------
+# REQUIRED GITHUB CONFIGURATION  (Settings → Secrets and variables → Actions)
+#
+#   Secrets:
+#     AZURE_SUBSCRIPTION_ID   Subscription the azurerm provider authenticates to
+#     AZURE_TENANT_ID         Entra tenant ID
+#     TERRAFORM_TFVARS        Full contents of terraform.tfvars — see below
+#
+#   Variables:
+#     STATE_RESOURCE_GROUP        e.g. rg-tfstate-poc
+#     STATE_STORAGE_ACCOUNT_NAME  e.g. sttfstatepocbvt
+#     STATE_CONTAINER_NAME        optional, default: tfstate
+#     VENDING_STATE_KEY           optional, default: access-vending.tfstate
+#
+# ------------------------------------------------------------------------------
+# WHY TERRAFORM_TFVARS IS A SECRET *HERE* AND COMMITTED IN A CONSUMER REPO
+#
+# This looks inconsistent with examples/github-consumption/, which tells
+# consumers to commit terraform.tfvars. The reasoning differs by repo:
+#
+#   Consumer repo   Private to one organisation. The access configuration IS the
+#                   governance record — who owns prod, which roles need dual
+#                   approval — and belongs in reviewed pull requests.
+#
+#   THIS repo       The module source, potentially shared or made public. Its
+#                   terraform.tfvars holds named individuals' UPNs and POC tenant
+#                   identifiers. Committing those here would publish personal
+#                   data to anyone who can read the module.
+#
+# So: commit it where it is governance, keep it secret where it is someone's
+# name in a shared repo.
+#
+# ------------------------------------------------------------------------------
+# RUNNER IDENTITY PRIVILEGE
+#
+# The runner's managed identity needs every Graph permission from
+# bootstrap/grant-graph-permissions.sh, including
+# RoleManagement.ReadWrite.Directory — which lets it assign directory roles
+# anywhere in the tenant, including to itself. If this runner pool is shared with
+# other workflows, that shared pool becomes tenant-admin-capable.
+#
+# Grant with:  ./bootstrap/grant-graph-permissions.sh <runner-mi-client-id>
+#
+# Plus, on each vended subscription: User Access Administrator
+# (role bindings AND PIM policies — "Role Based Access Control Administrator" is
+# not enough for the policies).
+# And on the state storage account: Storage Blob Data Contributor.
+#
+# ------------------------------------------------------------------------------
+# ORDER OF OPERATIONS
+#
+# This must apply BEFORE the access-package repo. Not only because the groups
+# must exist: for pim_for_groups the PIM policy must be written first, or the
+# access package resource-role picker offers only "Member" and not
+# "Eligible Member" — active membership instead of JIT, with nothing failing.
+# ==============================================================================
+
+name: Deploy — POC tenant
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to run"
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  contents: read
+
+concurrency:
+  # State is a single file. Two concurrent runs give a lock conflict at best.
+  group: access-vending-poc
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: Terraform ${{ inputs.action }}
+    runs-on:
+      - self-hosted
+      - azure
+      - container-instance
+
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_USE_MSI: true
+      # ARM_CLIENT_ID is injected by the scaler function into the ACI container
+      # environment. It holds the client ID of the runner's user-assigned
+      # managed identity.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+          terraform_wrapper: false
+
+      - name: Write terraform.tfvars
+        env:
+          TFVARS: ${{ secrets.TERRAFORM_TFVARS }}
+        run: |
+          if [ -z "$TFVARS" ]; then
+            echo "::error::Secret TERRAFORM_TFVARS is empty. terraform.tfvars is gitignored in this repo (it holds named UPNs), so CI cannot read it from the checkout."
+            exit 1
+          fi
+          printf '%s' "$TFVARS" > terraform.tfvars
+          echo "Wrote terraform.tfvars ($(wc -l < terraform.tfvars) lines)"
+
+      - name: Generate backend.hcl
+        env:
+          STATE_RG: ${{ vars.STATE_RESOURCE_GROUP }}
+          STATE_SA: ${{ vars.STATE_STORAGE_ACCOUNT_NAME }}
+          STATE_CONT: ${{ vars.STATE_CONTAINER_NAME || 'tfstate' }}
+          STATE_KEY: ${{ vars.VENDING_STATE_KEY || 'access-vending.tfstate' }}
+        run: |
+          if [ -z "$STATE_RG" ] || [ -z "$STATE_SA" ]; then
+            echo "::error::STATE_RESOURCE_GROUP and STATE_STORAGE_ACCOUNT_NAME must be set as repository variables."
+            exit 1
+          fi
+          # use_msi alongside use_azuread_auth: the backend authenticates with the
+          # runner's managed identity rather than an access key. Without use_msi
+          # the backend tries a different credential chain and fails with a 403
+          # that reads like a missing container.
+          cat > backend.hcl <<EOF
+          resource_group_name  = "$STATE_RG"
+          storage_account_name = "$STATE_SA"
+          container_name       = "$STATE_CONT"
+          key                  = "$STATE_KEY"
+          use_azuread_auth     = true
+          use_msi              = true
+          EOF
+
+      - name: Terraform Init
+        run: |
+          for attempt in 1 2 3; do
+            terraform init -input=false -backend-config=backend.hcl && exit 0
+            echo "Attempt $attempt/3 failed — retrying in 30s..."
+            sleep 30
+          done
+          echo "All attempts failed"
+          exit 1
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: inputs.action != 'destroy'
+        run: |
+          for attempt in 1 2 3; do
+            terraform plan -input=false -var-file=terraform.tfvars -out=tfplan && exit 0
+            echo "Attempt $attempt/3 failed — retrying in 30s..."
+            sleep 30
+          done
+          echo "All attempts failed"
+          exit 1
+
+      - name: Terraform Plan (destroy)
+        if: inputs.action == 'destroy'
+        run: |
+          for attempt in 1 2 3; do
+            terraform plan -destroy -input=false -var-file=terraform.tfvars -out=tfplan && exit 0
+            echo "Attempt $attempt/3 failed — retrying in 30s..."
+            sleep 30
+          done
+          echo "All attempts failed"
+          exit 1
+
+      # The demo escape hatch grants standing eligibility outside the access
+      # package flow. It must never reach a real environment.
+      - name: Verify no demo eligibility
+        if: inputs.action != 'destroy'
+        run: |
+          if terraform show -json tfplan | grep -q 'demo_eligible_user_principal_names":\["'; then
+            echo "::error::demo_eligible_user_principal_names is in use. That grants standing eligibility outside the access package flow and must not occur in CI."
+            exit 1
+          fi
+          echo "OK — no demo eligibility in plan."
+
+      - name: Plan summary
+        run: |
+          {
+            echo "### Terraform ${{ inputs.action }} — plan"
+            echo '```'
+            terraform show -no-color tfplan | tail -60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform Apply
+        if: inputs.action == 'apply' || inputs.action == 'destroy'
+        run: |
+          for attempt in 1 2 3; do
+            terraform apply -auto-approve -input=false tfplan && exit 0
+            echo "Attempt $attempt/3 failed — retrying in 30s..."
+            sleep 30
+          done
+          echo "All attempts failed"
+          exit 1
+
+      - name: Output contract
+        if: inputs.action == 'apply'
+        run: |
+          {
+            echo "### Contract for the access-package repo"
+            echo ""
+            echo "Group names, keyed \`{scope}--{role}\`:"
+            echo '```json'
+            terraform output -json group_names
+            echo '```'
+            echo "Access type per group:"
+            echo '```json'
+            terraform output -json access_package_access_type
+            echo '```'
+            echo "Approver groups, keyed on scope (only scopes with a \`dual\` role):"
+            echo '```json'
+            terraform output -json approver_group_names
+            echo '```'
+            echo "System owners per scope — request-gate approvers:"
+            echo '```json'
+            terraform output -json systemeier_by_scope
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post-destroy notes
+        if: inputs.action == 'destroy'
+        run: |
+          {
+            echo "### Destroy complete — two things Terraform did not undo"
+            echo ""
+            echo "**R4** — \`azuread_directory_role\` does nothing on destroy, so any Entra"
+            echo "directory roles activated by the \`entra_role\` mechanism remain activated"
+            echo "in the tenant."
+            echo ""
+            echo "**R1** — PIM onboarding is irreversible, and deleted groups can linger in"
+            echo "the PIM for Groups list for up to 24 hours. Re-applying with the same group"
+            echo "names shortly after may hit friction."
+          } >> "$GITHUB_STEP_SUMMARY"

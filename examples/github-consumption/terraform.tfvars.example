@@ -1,0 +1,189 @@
+# ==============================================================================
+# terraform.tfvars — COMMIT THIS FILE
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Unlike most Terraform templates, this file belongs in git. For an access-vending
+# system the configuration IS the governance record: "who is systemeier for prod"
+# and "which roles need dual approval" are exactly the changes that should arrive
+# as a reviewed pull request with history.
+#
+# If your .gitignore excludes *.tfvars, add an exception:
+#
+#     !terraform.tfvars
+#
+# tenant_id and provider_subscription_id are NOT here. They are provider
+# configuration and come from GitHub secrets via TF_VAR_ — see the workflow.
+#
+# Full field reference: modules/access-vending/README.md in the source repo.
+# ==============================================================================
+
+# Default prefix when a scope does not set `cloud` itself.
+cloud_prefix = "azure"
+
+# false on purpose — a group owner can bypass the access package. See variables.tf.
+set_systemeier_as_group_owner = false
+
+# Wait for Graph propagation before PIM resources are created.
+pim_group_propagation_delay = "30s"
+
+access_scopes = {
+
+  # ============================================================================
+  # AZURE — jit_mechanism "azure_pim" is the default and can be omitted.
+  #
+  # The group is NOT PIM-managed; membership is active. The user activates the
+  # ROLE. Requires cloud = "azure", azure_role, and scope_id as a subscription
+  # GUID.
+  # ============================================================================
+
+  "platform-prod" = {
+    cloud    = "azure"
+    scope_id = "REPLACE-subscription-guid"
+
+    # One or more UPNs. These approve the access package REQUEST, and also
+    # approve role activation when approval_type is "owner" or "dual".
+    #
+    # Two or more is strongly advised: an approver cannot approve their own
+    # request, so a lone systemeier cannot activate their own "dual" role.
+    systemeier = ["REPLACE-owner@example.com", "REPLACE-owner2@example.com"]
+
+    roles = {
+      # Permanent read. No activation, no approval. The time limit comes from
+      # expiry on the access package assignment.
+      "reader" = {
+        azure_role       = "Reader"
+        permanent_access = true
+      }
+
+      # Requires activation. "dual" = systemeier AND the approver group
+      # azure-platform-prod-approvers, which this module creates and seeds with
+      # the systemeier. One signature from either is enough.
+      "contributor" = {
+        azure_role           = "Contributor"
+        approval_type        = "dual"
+        max_activation_hours = 8
+      }
+
+      # Highest privilege: MFA, short window, ticket reference.
+      "owner" = {
+        azure_role           = "Owner"
+        approval_type        = "dual"
+        max_activation_hours = 2
+        require_mfa          = true
+        require_ticket_info  = true
+      }
+    }
+  }
+
+  # ============================================================================
+  # OTHER CLOUDS — jit_mechanism "pim_for_groups", must be explicit.
+  #
+  # The group IS PIM-managed: the access package grants eligibility and the user
+  # activates the MEMBERSHIP.
+  #
+  # Terraform does NOT connect the group to the target cloud. Provision it there
+  # with SCIM from the Entra enterprise application and bind it to the role.
+  # `target_role` documents what that binding should be — see the output
+  # target_cloud_bindings.
+  #
+  # Note the scope key is "prod", not "aws-prod": the prefix comes from `cloud`,
+  # so "aws-prod" would produce aws-aws-prod-admin.
+  #
+  # KNOWN GAP: the azuread provider cannot set access_type = "EligibleMember" on
+  # an access package resource role (only Member or Owner). Until that is
+  # resolved, the access-package repo must attach these groups manually, or the
+  # user becomes an ACTIVE member on assignment — standing access instead of JIT,
+  # with nothing failing. Verify after your first end-to-end test.
+  # ============================================================================
+
+  # "prod" = {
+  #   cloud      = "aws"
+  #   scope_id   = "REPLACE-aws-account-id"   # documentation only
+  #   systemeier = ["REPLACE-cloudowner@example.com"]
+  #
+  #   roles = {
+  #     "readonly" = {
+  #       jit_mechanism = "pim_for_groups"
+  #       target_role   = "ReadOnlyAccess"
+  #       approval_type = "self"
+  #     }
+  #
+  #     "admin" = {
+  #       jit_mechanism        = "pim_for_groups"
+  #       target_role          = "AdministratorAccess"
+  #       max_activation_hours = 4
+  #       require_mfa          = true
+  #     }
+  #   }
+  # }
+
+  # GCP and GitHub follow the same shape — only `cloud` and `target_role` differ.
+  #
+  # "data-platform" = {
+  #   cloud      = "gcp"
+  #   scope_id   = "REPLACE-gcp-project-id"
+  #   systemeier = ["REPLACE-dataowner@example.com"]
+  #
+  #   roles = {
+  #     "bigquery-admin" = {
+  #       jit_mechanism        = "pim_for_groups"
+  #       target_role          = "roles/bigquery.admin"
+  #       max_activation_hours = 4
+  #       require_mfa          = true
+  #     }
+  #   }
+  # }
+
+  # ============================================================================
+  # ENTRA DIRECTORY ROLES — jit_mechanism "entra_role".
+  #
+  # Requires cloud = "entra". scope_id is directory_scope_id: "/" for the whole
+  # tenant, or "/administrativeUnits/<guid>".
+  #
+  # ----------------------------------------------------------------------------
+  # READ BEFORE ENABLING
+  #
+  # 1. Terraform CANNOT set MFA, approval or maximum duration for directory
+  #    roles — the azuread provider has no policy resource for them. Set those in
+  #    the PIM portal. approval_type, require_mfa, require_justification,
+  #    require_ticket_info and max_activation_hours are REJECTED here rather than
+  #    silently ignored, because accepting them would misrepresent what is
+  #    enforced. Check: terraform output entra_activation_governance_gap
+  #
+  # 2. Consequently, the access package REQUEST approval is the only gate
+  #    Terraform enforces on this path. Keep the assignment duration short.
+  #
+  # 3. These groups are role-assignable, which is FORCE-REPLACE in Entra. They
+  #    cannot be converted later and cannot be reused from the other mechanisms.
+  #    Keep entra_role roles in their own scope.
+  #
+  # 4. The role you vend has power over the other mechanisms. Groups
+  #    Administrator can manage membership in every non-role-assignable group —
+  #    all your azure_pim and pim_for_groups groups — and rewrite their PIM
+  #    policies. Directory Readers is harmless; Groups Administrator is not.
+  #
+  # 5. Requires two extra Graph permissions: RoleManagement.ReadWrite.Directory
+  #    and RoleEligibilitySchedule.ReadWrite.Directory.
+  # ============================================================================
+
+  # "tenant" = {
+  #   cloud      = "entra"
+  #   scope_id   = "/"
+  #   systemeier = ["REPLACE-identityowner@example.com"]
+  #
+  #   roles = {
+  #     "directoryreader" = {
+  #       jit_mechanism    = "entra_role"
+  #       entra_role       = "Directory Readers"
+  #       permanent_access = true
+  #     }
+  #
+  #     "groupsadmin" = {
+  #       jit_mechanism          = "entra_role"
+  #       entra_role             = "Groups Administrator"
+  #       eligible_justification = "Vended by access vending, ticket REPLACE-1234"
+  #     }
+  #   }
+  # }
+}
