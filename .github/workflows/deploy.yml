@@ -115,7 +115,12 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "~> 1.9"
+          # PINNED, and must match validate.yml. Note that "~> 1.9" would NOT
+          # have meant "1.9.x" — with two components it resolves to the newest
+          # 1.x, so it drifts on every release. Testing on one version and
+          # deploying on another is not a risk worth taking for a repo that
+          # vends tenant-wide access.
+          terraform_version: "1.16.1"
           terraform_wrapper: false
 
       - name: Write terraform.tfvars

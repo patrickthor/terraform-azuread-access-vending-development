@@ -133,9 +133,18 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
-          # >= 1.9 is a hard requirement: the module's validations use
-          # cross-variable references, which do not exist before 1.9.
-          terraform_version: "~> 1.9"
+          # Pinned exactly, and bumped deliberately.
+          #
+          # 1.9 is the module's hard floor — its validations use cross-variable
+          # references, which do not exist before that. But do not write
+          # "~> 1.9" here: with two components that means ">= 1.9, < 2.0", so it
+          # silently follows every new 1.x release rather than staying on 1.9.
+          #
+          # Pinning matters more than usual for this module. A null-guard bug in
+          # v0.1.0 could not be reproduced on 1.14.5 or 1.16.1 locally yet failed
+          # in CI, so evaluation behaviour varies by version or context. A
+          # floating version means an unchanged commit can start failing.
+          terraform_version: "1.16.1"
           terraform_wrapper: false
 
       - name: Check terraform.tfvars is present
