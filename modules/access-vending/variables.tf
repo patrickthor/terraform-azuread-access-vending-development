@@ -324,15 +324,18 @@ variable "access_scopes" {
     # what the provider interprets as "no expiry limit". It must be written
     # explicitly because it undermines JIT — it should not be something you
     # achieve by omitting a field.
-    condition = alltrue(flatten([
-      for scope in values(var.access_scopes) : [
-        for role in values(scope.roles) :
-        role.active_assignment_expire_after == null || contains(
-          ["P15D", "P30D", "P90D", "P180D", "P365D", "permanent"],
-          coalesce(role.active_assignment_expire_after, "P30D")
-        )
-      ]
-    ]))
+    #
+    # Nulls filtered rather than guarded with `||` — see the approval_type
+    # validation. This one did not crash before, because the coalesce() meant
+    # contains() never actually saw the null. That was luck, not design.
+    condition = alltrue([
+      for v in flatten([
+        for scope in values(var.access_scopes) : [
+          for role in values(scope.roles) : role.active_assignment_expire_after
+          if role.active_assignment_expire_after != null
+        ]
+      ]) : contains(["P15D", "P30D", "P90D", "P180D", "P365D", "permanent"], v)
+    ])
     error_message = "active_assignment_expire_after must be P15D, P30D, P90D, P180D or P365D. null gives the default P30D. \"permanent\" allows permanent ACTIVE memberships and removes the JIT guarantee for them — it must be written explicitly."
   }
 
@@ -418,12 +421,28 @@ variable "access_scopes" {
   # ---------------------------------------------------------------------------
 
   validation {
-    condition = alltrue(flatten([
-      for scope in values(var.access_scopes) : [
-        for role in values(scope.roles) :
-        role.approval_type == null || contains(["self", "owner", "dual"], role.approval_type)
-      ]
-    ]))
+    # NULLS ARE FILTERED OUT BEFORE contains(), NOT GUARDED WITH `||`.
+    #
+    # `x == null || contains(list, x)` looks like a null guard but is not one:
+    # Terraform's `||` does not reliably short-circuit, so contains() still
+    # receives the null and fails with
+    #   "Invalid value for \"value\" parameter: argument must not be null."
+    #
+    # This was a real failure when the module was consumed from a git source —
+    # any role omitting approval_type broke plan, even though omitting it is
+    # documented and intended. A ternary is not a dependable fix either, for the
+    # same reason. Filtering in the `for` clause is: the value is never passed to
+    # a function at all.
+    #
+    # Same pattern applies to every nullable field validated in this file.
+    condition = alltrue([
+      for v in flatten([
+        for scope in values(var.access_scopes) : [
+          for role in values(scope.roles) : role.approval_type
+          if role.approval_type != null
+        ]
+      ]) : contains(["self", "owner", "dual"], v)
+    ])
     error_message = "approval_type must be one of: self, owner, dual. null gives the default (owner) for azure_pim and pim_for_groups."
   }
 
@@ -471,23 +490,33 @@ variable "access_scopes" {
   }
 
   validation {
-    condition = alltrue(flatten([
-      for scope in values(var.access_scopes) : [
-        for role in values(scope.roles) :
-        role.max_activation_hours == null || (role.max_activation_hours >= 1 && role.max_activation_hours <= 23)
-      ]
-    ]))
+    # Nulls filtered out before the comparison — see the approval_type
+    # validation above. A raw null reaching `>=` fails with
+    # "Error during operation: argument must not be null."
+    condition = alltrue([
+      for v in flatten([
+        for scope in values(var.access_scopes) : [
+          for role in values(scope.roles) : role.max_activation_hours
+          if role.max_activation_hours != null
+        ]
+      ]) : v >= 1 && v <= 23
+    ])
     error_message = "max_activation_hours must be between 1 and 23 (activation duration limit). null gives the default (8)."
   }
 
   validation {
     # Azure only accepts a fixed set of durations for eligible assignment expiry.
-    condition = alltrue(flatten([
-      for scope in values(var.access_scopes) : [
-        for role in values(scope.roles) :
-        role.eligible_duration_days == null || contains([15, 30, 90, 180, 365], coalesce(role.eligible_duration_days, 30))
-      ]
-    ]))
+    #
+    # Nulls filtered rather than guarded with `||` — see the approval_type
+    # validation.
+    condition = alltrue([
+      for v in flatten([
+        for scope in values(var.access_scopes) : [
+          for role in values(scope.roles) : role.eligible_duration_days
+          if role.eligible_duration_days != null
+        ]
+      ]) : contains([15, 30, 90, 180, 365], v)
+    ])
     error_message = "eligible_duration_days must be 15, 30, 90, 180 or 365 — Azure only accepts P15D/P30D/P90D/P180D/P365D. null gives permanent eligibility, which requires that the policy allows it."
   }
 

@@ -80,9 +80,15 @@ variable "assignments" {
     # expire_after on eligible_assignment_rules only accepts a fixed set of durations.
     # Without this validation a value like 45 would only fail at apply, after the
     # policy is already partially modified.
+    # Nulls filtered rather than guarded with `||`: Terraform's `||` does not
+    # reliably short-circuit, so a raw null can reach contains() and fail with
+    # "argument must not be null". Filtering in the `for` clause means the value
+    # is never passed to a function at all.
     condition = alltrue([
-      for a in values(var.assignments) :
-      a.eligible_duration_days == null || contains([15, 30, 90, 180, 365], coalesce(a.eligible_duration_days, 30))
+      for v in [
+        for a in values(var.assignments) : a.eligible_duration_days
+        if a.eligible_duration_days != null
+      ] : contains([15, 30, 90, 180, 365], v)
     ])
     error_message = "eligible_duration_days must be 15, 30, 90, 180 or 365 — Azure only accepts P15D/P30D/P90D/P180D/P365D as eligible assignment expiry. null gives permanent eligibility."
   }

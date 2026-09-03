@@ -1,0 +1,1 @@
+../../../modules/access-vending/variables.tf

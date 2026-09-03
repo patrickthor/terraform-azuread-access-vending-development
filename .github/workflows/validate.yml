@@ -32,9 +32,18 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
-          # >= 1.9 is a hard floor: the module's validations use cross-variable
-          # references, which do not exist before 1.9.
-          terraform_version: "~> 1.9"
+          # PINNED EXACTLY, not "~> 1.9".
+          #
+          # A floating constraint means the same commit can behave differently
+          # from one run to the next as new patches ship. That matters here: the
+          # null-guard bug fixed in v0.1.1 could not be reproduced on 1.14.5 or
+          # 1.16.1 locally, yet failed in CI — so evaluation behaviour clearly
+          # varies by version or context. Pinning makes CI results comparable.
+          #
+          # Bump deliberately, and run the tests/null-optionals fixture when you
+          # do. The module's own floor is >= 1.9 (cross-variable references in
+          # validations).
+          terraform_version: "1.16.1"
           terraform_wrapper: false
 
       - name: Terraform fmt
@@ -119,6 +128,25 @@ jobs:
           check modules/access-vending/modules/pim-group-access  azurerm || fail=1
           check modules/access-vending/modules/entra-role-access azurerm || fail=1
           exit $fail
+
+      # Regression fixture for the v0.1.1 null-guard bug: a config that omits
+      # every optional field must plan cleanly.
+      #
+      # This runs `plan`, not `validate`, on purpose — `validate` does not load
+      # tfvars, and module variable validation is evaluated during the graph
+      # walk, which is why the original bug reached a consumer undetected.
+      #
+      # The fixture declares no providers, so it needs no credentials. Note the
+      # limitation recorded in tests/null-optionals/main.tf: because it creates
+      # no resources, nothing in its graph is ever *unknown*, so it cannot
+      # reproduce the unknown-value evaluation path that a real plan against
+      # existing state exercises.
+      - name: Regression — roles omitting every optional field
+        working-directory: tests/null-optionals
+        run: |
+          terraform init -backend=false -input=false -no-color >/dev/null
+          terraform plan -input=false -no-color
+          echo "OK  null-heavy config plans cleanly"
 
       # A consumer receives only modules/access-vending/. Prove it stands alone:
       # no relative paths escaping its own tree, and it validates when called

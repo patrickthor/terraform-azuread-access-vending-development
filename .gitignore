@@ -23,19 +23,29 @@ crash.*.log
 # ------------------------------------------------------------------------------
 # Variabelfiler
 #
-# terraform.tfvars inneholder reelle subscription-IDer, systemeier-UPN,
-# eligible_user_principal_names og navn på godkjennergrupper. Skal aldri
-# committes. Eksempelfila med placeholders skal derimot ligge i git.
+# terraform.tfvars holds real subscription IDs, systemeier UPNs,
+# eligible_user_principal_names and approver group names. It must never be
+# committed in THIS repo. The .example file with placeholders does belong in git.
+#
+# Note the asymmetry: a CONSUMER repo should commit its terraform.tfvars, because
+# there the access configuration is the governance record and belongs in reviewed
+# pull requests. See examples/github-consumption/README.md. This repo is the
+# module source and holds named individuals' UPNs, so it does not.
 # ------------------------------------------------------------------------------
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
 
-# Backend-konfigurasjon. Ikke hemmelig, men miljospesifikk — en committet
-# backend.hcl gjør at neste person kjører mot feil state uten å merke det.
+# Test fixtures are input, not secrets — all-zero placeholder GUIDs, and no
+# provider ever authenticates with them. They MUST be committed or the
+# regression tests silently pass against no input in CI.
+!tests/**/terraform.tfvars
+
+# Backend configuration. Not secret, but environment-specific — a committed
+# backend.hcl makes the next person run against the wrong state without noticing.
 backend.hcl
 
-# CLI-konfig som kan inneholde credentials eller mirror-oppsett.
+# CLI config that may contain credentials or mirror setup.
 .terraformrc
 terraform.rc
 
