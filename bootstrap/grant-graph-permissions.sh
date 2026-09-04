@@ -72,6 +72,23 @@ PERMISSIONS=(
 
   # Eligible directory role bindings.
   "RoleEligibilitySchedule.ReadWrite.Directory"
+
+  # --- Repo 2: access-packages ------------------------------------------------
+  # Catalogs, access packages and assignment policies. Granted here so ONE script
+  # covers both modules — the two repos are consumed from a single customer root
+  # with a single apply, so they run as one identity.
+  #
+  # That shared identity is a requirement, not a convenience: repo 1's identity
+  # owns every group it creates, and repo 2's
+  # azuread_access_package_resource_catalog_association fails with
+  # CallerNotResourceOwner when the caller does not own the group being linked. A
+  # separate identity for repo 2 would need group ownership or Catalog owner on
+  # top of this permission.
+  #
+  # Harmless to grant before repo 2 is in play — it authorises nothing on its own
+  # until an access package exists. Comment it out if you are running the vending
+  # module alone and want the tightest possible grant.
+  "EntitlementManagement.ReadWrite.All"
 )
 
 # ------------------------------------------------------------------------------

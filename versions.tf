@@ -26,7 +26,7 @@ terraform {
   # more than one person will run.
 
   # Uncomment the line below to use remote state
-  backend "azurerm" {}
+  #backend "azurerm" {}
 
   required_providers {
     azuread = {

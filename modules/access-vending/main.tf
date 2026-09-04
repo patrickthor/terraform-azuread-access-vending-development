@@ -191,6 +191,196 @@ locals {
     }
     if anytrue([for role in values(scope.roles) : role.jit_mechanism == "entra_role"])
   }
+
+  # ============================================================================
+  # THE MACHINE CONTRACT
+  #
+  # One output, consumed as repo 2's only input. The 22 human-readable outputs
+  # stay as they are — they are good for reading a plan. This is the machine part.
+  #
+  # THE ONE RULE: every map key and every list element below must be derivable
+  # from var.access_scopes alone. Never key a contract map, or populate a contract
+  # list, from a resource attribute.
+  #
+  # Repo 2 uses contract.roles, contract.scopes, contract.catalogs, role_keys and
+  # scope_keys as for_each sources, and for_each needs keys known at PLAN time.
+  # Values inside the maps may be unknown until apply — group_object_id always is
+  # — and that is fine, because unknown values only break for_each and count.
+  #
+  # A regression here does not fail in this repo. It surfaces in repo 2 as
+  # "The for_each value depends on resource attributes that cannot be determined
+  # until apply", for a change made here. Run a plan against an empty tenant
+  # whenever this assembly changes.
+  # ============================================================================
+
+  # ISO-8601 durations mapped to days, so neither repo parses ISO-8601 and no
+  # human keeps a duplicated ceiling in sync. "permanent" is deliberately absent:
+  # it falls through the lookup below to null.
+  expire_after_days = {
+    P15D  = 15
+    P30D  = 30
+    P90D  = 90
+    P180D = 180
+    P365D = 365
+  }
+
+  # Every (scope, role) pair flattened once, from the VARIABLE only. Everything
+  # else in the contract is derived from this list, so there is a single place
+  # where the plan-time guarantee has to hold.
+  contract_role_entries = flatten([
+    for scope_key, scope in var.access_scopes : [
+      for role_key, role in scope.roles : {
+        composite = "${scope_key}--${role_key}"
+        scope_key = scope_key
+        role_key  = role_key
+        mechanism = role.jit_mechanism
+        role      = role
+      }
+    ]
+  ])
+
+  # Effective expiry per composite key, for pim_for_groups only. The coalesce
+  # mirrors the default applied in pim_group_scopes above, so the contract
+  # reports the ceiling that is actually in force rather than what was typed.
+  #
+  # The expiry-drift trap only exists for pim_for_groups: if a package assignment
+  # outlives the group's eligible-assignment expiry, PIM expires the eligibility
+  # while Entitlement Management still lists the user as assigned. Nothing errors
+  # and the user's MyAccess page contradicts what they can actually do.
+  contract_expire_after = {
+    for entry in local.contract_role_entries :
+    entry.composite => coalesce(entry.role.active_assignment_expire_after, "P30D")
+    if entry.mechanism == "pim_for_groups"
+  }
+
+  # Group name and object ID per composite key.
+  #
+  # The KEYS here come from the mechanism scope maps above, which are themselves
+  # built from var.access_scopes — so they are plan-known. Only the VALUES come
+  # from module outputs. This is the distinction that matters: merging maps whose
+  # keys came out of a module would make the contract's key set unknown at plan
+  # time, which is exactly what breaks repo 2.
+  #
+  # The name is READ BACK from the submodules rather than recalculated here. The
+  # naming formula lives in one place only.
+  group_facts = merge(
+    merge([
+      for scope_key, scope in local.azure_pim_scopes : {
+        for role_key in keys(scope.roles) : "${scope_key}--${role_key}" => {
+          group_name      = module.azure_pim_access[scope_key].group_names[role_key]
+          group_object_id = module.azure_pim_access[scope_key].group_object_ids[role_key]
+          access_type     = "Member"
+        }
+      }
+    ]...),
+    merge([
+      for scope_key, scope in local.pim_group_scopes : {
+        for role_key in keys(scope.roles) : "${scope_key}--${role_key}" => {
+          group_name      = module.pim_group_access[scope_key].group_names[role_key]
+          group_object_id = module.pim_group_access[scope_key].group_object_ids[role_key]
+          access_type     = module.pim_group_access[scope_key].access_package_access_type[role_key]
+        }
+      }
+    ]...),
+    merge([
+      for scope_key, scope in local.entra_role_scopes : {
+        for role_key in keys(scope.roles) : "${scope_key}--${role_key}" => {
+          group_name      = module.entra_role_access[scope_key].group_names[role_key]
+          group_object_id = module.entra_role_access[scope_key].group_object_ids[role_key]
+          access_type     = module.entra_role_access[scope_key].access_package_access_type[role_key]
+        }
+      }
+    ]...),
+  )
+
+  # Catalog LABEL per scope. This repo creates no catalogs and does not know what
+  # one is; it validates the string and forwards it.
+  scope_catalog = {
+    for scope_key, scope in var.access_scopes :
+    scope_key => coalesce(scope.catalog, var.default_catalog)
+  }
+
+  # ---- the three contract maps, named so the guarantee is reviewable ----------
+
+  contract_roles = {
+    for entry in local.contract_role_entries : entry.composite => {
+      scope = entry.scope_key
+      role  = entry.role_key
+
+      group_name      = local.group_facts[entry.composite].group_name
+      group_object_id = local.group_facts[entry.composite].group_object_id
+
+      # repo 1's ANSWER, not repo 2's guess. Repo 2 must never default a missing
+      # access_type: defaulting to "Member" turns JIT eligibility into standing
+      # membership, the apply succeeds, the portal looks right, and the user
+      # silently holds access they should have had to activate for.
+      access_type = local.group_facts[entry.composite].access_type
+
+      jit_mechanism    = entry.mechanism
+      permanent_access = entry.role.permanent_access
+
+      # The RBAC role, target-cloud role, or directory role, depending on
+      # mechanism. Exactly one of the three is set — the variable validations
+      # reject the others.
+      target = coalesce(
+        entry.role.azure_role,
+        entry.role.target_role,
+        entry.role.entra_role,
+        "",
+      )
+
+      # null for azure_pim and entra_role, and null for the "permanent" sentinel.
+      # None of the three is a key in expire_after_days, so one lookup with a null
+      # default covers every case.
+      max_assignment_days = lookup(
+        local.expire_after_days,
+        lookup(local.contract_expire_after, entry.composite, "permanent"),
+        null,
+      )
+    }
+  }
+
+  contract_scopes = {
+    for scope_key, scope in var.access_scopes : scope_key => {
+      catalog    = local.scope_catalog[scope_key]
+      cloud      = coalesce(scope.cloud, var.cloud_prefix)
+      scope_id   = scope.scope_id
+      systemeier = scope.systemeier
+
+      # Keyed on SCOPE, not composite key: one approver group serves every role
+      # under a scope. Null where no role uses approval_type "dual" — repo 2 must
+      # tolerate a scope with no approver group.
+      approver_group_name      = lookup(local.approver_group_names, scope_key, null)
+      approver_group_object_id = lookup(local.approver_group_object_ids, scope_key, null)
+
+      # Explicit sorted list rather than leaving repo 2 to compute it. Naming it
+      # is what makes the plan-time guarantee reviewable instead of accidental.
+      role_keys = sort([
+        for role_key in keys(scope.roles) : "${scope_key}--${role_key}"
+      ])
+    }
+  }
+
+  contract_catalogs = {
+    for label in distinct(values(local.scope_catalog)) : label => {
+      scope_keys = sort([
+        for scope_key, scope_label in local.scope_catalog : scope_key
+        if scope_label == label
+      ])
+    }
+  }
+
+  # ---- warning-level note, deliberately NOT a validation ---------------------
+  #
+  # Directory-role access is the highest-privilege thing this system vends, so it
+  # should be easy to spot in a catalog listing. But sharing a catalog is a
+  # legitimate choice — one identity team owning everything means one catalog is
+  # correct — so this reports rather than rejects.
+  entra_only_scopes_sharing_catalog = sort([
+    for scope_key, scope in var.access_scopes : scope_key
+    if alltrue([for role in values(scope.roles) : role.jit_mechanism == "entra_role"])
+    && length(local.contract_catalogs[local.scope_catalog[scope_key]].scope_keys) > 1
+  ])
 }
 
 # ------------------------------------------------------------------------------

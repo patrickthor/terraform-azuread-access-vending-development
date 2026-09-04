@@ -15,6 +15,28 @@ variable "cloud_prefix" {
   }
 }
 
+variable "default_catalog" {
+  description = <<-EOT
+    Catalog label applied to scopes that do not set `catalog` themselves.
+
+    This repo creates no catalogs. The label is forwarded in `contract.scopes[*].catalog`
+    and in `contract.catalogs`, and repo 2 creates or adopts one catalog per distinct
+    label. Keeping it here means adding a catalog is one word in the shared
+    terraform.tfvars rather than a second source of truth in repo 2.
+
+    A catalog in Entra is a delegation boundary — who may add resources to it and
+    manage packages inside it. So the label should track OWNERSHIP, not
+    environment. One identity team owning everything means one catalog is correct.
+  EOT
+  type        = string
+  default     = "cloud-access"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+$", var.default_catalog))
+    error_message = "default_catalog must be lowercase letters, digits and hyphens."
+  }
+}
+
 variable "access_scopes" {
   description = <<-EOT
     Access scopes and their roles. A scope is a target the access applies to: an
@@ -60,6 +82,19 @@ variable "access_scopes" {
   type = map(object({
     # Prefix for group names. null yields var.cloud_prefix.
     cloud = optional(string)
+
+    # Catalog LABEL for the scope. null yields var.default_catalog.
+    #
+    # This repo does not know what a catalog is and creates none. The label is
+    # validated and forwarded in contract.scopes[*].catalog and contract.catalogs;
+    # repo 2 creates or adopts one catalog per distinct label.
+    #
+    # DECLARING THIS EXPLICITLY IS NOT OPTIONAL. Terraform silently drops
+    # attributes that are not part of the declared object type, so a `catalog` in
+    # terraform.tfvars that this repo had not declared would vanish with no error
+    # and every scope would land in the default catalog. Same trap that
+    # approver_group_name at role level is declared purely to reject.
+    catalog = optional(string)
 
     # Azure subscription ID (GUID) when the scope has azure_pim roles. Otherwise
     # a free string — AWS account ID, GCP project ID, GitHub org name — and
@@ -419,6 +454,22 @@ variable "access_scopes" {
   # ---------------------------------------------------------------------------
   # Common requirements
   # ---------------------------------------------------------------------------
+
+  validation {
+    # Nulls filtered in the `for` clause, never guarded with `||` — see the long
+    # note on approval_type below for why that matters.
+    #
+    # The charset is enforced because the label becomes a map key in
+    # contract.catalogs and a display-name component in repo 2. This repo does not
+    # otherwise interpret it.
+    condition = alltrue([
+      for v in [
+        for scope in values(var.access_scopes) : scope.catalog
+        if scope.catalog != null
+      ] : can(regex("^[a-z0-9-]+$", v))
+    ])
+    error_message = "catalog must be lowercase letters, digits and hyphens. It becomes a map key in the contract and part of an access package display name in repo 2."
+  }
 
   validation {
     # NULLS ARE FILTERED OUT BEFORE contains(), NOT GUARDED WITH `||`.

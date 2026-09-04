@@ -390,3 +390,68 @@ output "systemeier_by_scope" {
   EOT
   value       = { for scope_key, scope in var.access_scopes : scope_key => scope.systemeier }
 }
+
+# ==============================================================================
+# THE MACHINE CONTRACT
+#
+# Everything above is for humans reading a plan. This is the single
+# machine-readable output, and repo 2 accepts exactly this object as its only
+# machine-readable input. Shape is defined in
+# .kiro/steering/identity-governance-contract.md, which must stay byte-identical
+# in both repos.
+#
+# Assembly lives in locals (contract_roles / contract_scopes / contract_catalogs)
+# so the plan-time key guarantee is reviewable in one place. See the long comment
+# on THE MACHINE CONTRACT in main.tf.
+# ==============================================================================
+
+output "contract" {
+  description = <<-EOT
+    The machine-readable contract consumed by the access-packages repo (repo 2)
+    as `module.access_packages.vending`.
+
+    Repo 2 uses `roles`, `scopes`, `catalogs`, `role_keys` and `scope_keys` as
+    for_each sources, so every KEY here is derived from var.access_scopes alone
+    and is known at plan time. Values may be unknown until apply —
+    group_object_id always is — which is fine, because unknown values only break
+    for_each and count.
+
+    Wire it up in the customer root as:
+
+      module "access_packages" {
+        source  = "github.com/patrickthor/terraform-azuread-access-packages-development//modules/access-packages?ref=v1.0.0"
+        vending = module.access_vending.contract
+      }
+
+    Do NOT wrap contract fields in try() on the consuming side. A missing
+    access_type must fail loudly: papering over it is how just-in-time
+    eligibility silently becomes standing membership.
+  EOT
+
+  value = {
+    # A LITERAL, never derived — it has to be greppable across both repos.
+    # Additive fields do not bump it. Removing, renaming, or changing the meaning
+    # of a field does.
+    contract_version = 1
+
+    roles    = local.contract_roles
+    scopes   = local.contract_scopes
+    catalogs = local.contract_catalogs
+  }
+}
+
+output "catalog_privilege_notes" {
+  description = <<-EOT
+    Warning-level note, NOT a validation failure.
+
+    Lists scopes whose roles are all `entra_role` and which share a catalog with
+    other scopes. Directory-role access is the highest-privilege thing this
+    system vends, so it is worth being easy to spot in a catalog listing.
+
+    Empty list means nothing to look at. A non-empty list is not an error: one
+    identity team owning everything means one catalog is the correct design. Give
+    such a scope its own `catalog` label only if a different team should own the
+    packages built on it.
+  EOT
+  value       = local.entra_only_scopes_sharing_catalog
+}

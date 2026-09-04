@@ -81,6 +81,19 @@ variable "cloud_prefix" {
   default     = "azure"
 }
 
+variable "default_catalog" {
+  description = <<-EOT
+    Catalog label applied to scopes that do not set `catalog` themselves.
+
+    This repo creates no catalogs. The label is forwarded in the `contract`
+    output, and the access-packages repo (repo 2) creates or adopts one catalog
+    per distinct label. The label is a delegation boundary, so it should track
+    ownership rather than environment.
+  EOT
+  type        = string
+  default     = "cloud-access"
+}
+
 variable "group_description_template" {
   description = <<-EOT
     Template for group description. Placeholders: {cloud}, {sub}, {role},

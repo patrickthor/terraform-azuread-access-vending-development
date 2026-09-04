@@ -23,6 +23,7 @@ module "access_vending" {
   access_scopes = var.access_scopes
 
   cloud_prefix                  = var.cloud_prefix
+  default_catalog               = var.default_catalog
   group_description_template    = var.group_description_template
   set_systemeier_as_group_owner = var.set_systemeier_as_group_owner
   pim_group_propagation_delay   = var.pim_group_propagation_delay

@@ -118,3 +118,30 @@ output "systemeier_by_scope" {
   description = "System owner UPNs per scope key. Repo 2 uses these as named approvers on the access package request gate."
   value       = module.access_vending.systemeier_by_scope
 }
+
+# ==============================================================================
+# The machine contract
+#
+# Re-exposed at the root so this repo can be verified standalone. In the real
+# two-module setup the customer root wires the module output straight into repo 2
+# in memory — there is no terraform_remote_state anywhere:
+#
+#   module "access_packages" {
+#     source  = "github.com/patrickthor/terraform-azuread-access-packages-development//modules/access-packages?ref=v1.0.0"
+#     vending = module.access_vending.contract
+#   }
+#
+# One root config, one state, one apply. Apply order is enforced by the
+# dependency graph rather than by convention, so a single apply cannot get the
+# order wrong.
+# ==============================================================================
+
+output "contract" {
+  description = "Machine-readable contract for the access-packages repo (repo 2). See modules/access-vending/outputs.tf for the field reference."
+  value       = module.access_vending.contract
+}
+
+output "catalog_privilege_notes" {
+  description = "Scopes whose roles are all entra_role and which share a catalog with other scopes. Advisory only, never a failure."
+  value       = module.access_vending.catalog_privilege_notes
+}
