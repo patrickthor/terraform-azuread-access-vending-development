@@ -22,7 +22,7 @@ module "access_vending" {
   # Terraform requires `source` to be a literal string, so a version bump means
   # editing this line. That is deliberate: it makes the upgrade a reviewable
   # diff rather than a silent variable change.
-  source = "github.com/patrickthor/terraform-azuread-access-vending-development//modules/access-vending?ref=v0.1.0"
+  source = "github.com/patrickthor/terraform-azuread-access-vending-development//modules/access-vending?ref=v1.0.0"
 
   access_scopes = var.access_scopes
 

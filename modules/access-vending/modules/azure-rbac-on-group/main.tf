@@ -46,6 +46,28 @@ locals {
   }
 }
 
+# ------------------------------------------------------------------------------
+# READ `.id` HERE. NEVER `.role_definition_id`.
+#
+# azurerm 5.0 changed this data source: when `name` is supplied — which is what
+# this module always does — the `role_definition_id` ATTRIBUTE now returns a bare
+# UUID instead of a Resource Manager ID. It used to return the ARM ID, so the two
+# were interchangeable on 4.x and are not any more.
+#
+# Both consumers below need the SCOPED ARM ID:
+#   azurerm_role_management_policy.role_definition_id       (line ~93)
+#   azurerm_pim_eligible_role_assignment.role_definition_id (line ~164)
+#
+# `.id` is still the ARM ID, so both are correct as written. The trap is that
+# `role_definition_id` is an attribute with the same name as the argument those
+# two resources take, so "tidying" `.id` into `.role_definition_id` looks like an
+# obvious cleanup, APPLIES CLEANLY, and silently binds the wrong thing — a bare
+# UUID where a scoped ARM ID was required.
+#
+# If you want it explicit rather than relying on `.id`, use
+# `role_definition_resource_id` (added in 5.3.0), which is documented as "The
+# Azure Resource Manager ID for the resource". Do not use `role_definition_id`.
+# ------------------------------------------------------------------------------
 data "azurerm_role_definition" "this" {
   for_each = local.role_lookups
 

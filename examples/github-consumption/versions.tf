@@ -25,14 +25,32 @@ terraform {
   # content in plaintext. Use a storage account with RBAC, not access keys.
   backend "azurerm" {}
 
+  # Pinned to PATCH level, three segments — copy this shape into your own root.
+  # There are no lock files in these repos, so this block is the only thing
+  # pinning provider versions. `~> 5.0` would allow 5.5, 5.6 and every future
+  # minor; `~> 5.4.0` allows only 5.4.x.
+  #
+  # `time` is declared even though nothing here references it directly. The
+  # access-vending module resolves it through time_sleep, which is what lets a
+  # newly created group propagate in Graph before PIM resources are written
+  # against it. Declare every provider `terraform providers` reports, not just
+  # the ones you can see in your own files — an undeclared provider is unbounded.
+  #
+  # Do not add `-upgrade` to the init in the workflow. It re-resolves to the
+  # newest allowed version on every run, and there is no lock file for it to
+  # bypass.
   required_providers {
     azuread = {
       source  = "hashicorp/azuread"
-      version = "~> 3.7"
+      version = "~> 3.9.0"
     }
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+      version = "~> 5.4.0"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.14.0"
     }
   }
 }

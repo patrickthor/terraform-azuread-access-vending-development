@@ -48,7 +48,7 @@ terraform {
     # features {}.
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = ">= 4.0"
+      version = ">= 5.0"
     }
 
     # Wait time for Graph propagation in the pim_for_groups and entra_role track.

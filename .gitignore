@@ -52,12 +52,16 @@ terraform.rc
 # ------------------------------------------------------------------------------
 # Lock-filer
 #
-# Rot-modulens .terraform.lock.hcl SKAL committes — den pinner provider-
-# versjoner. Undermoduler pinner ikke, så deres lock-filer holdes ute.
+# INGEN lock-filer committes — heller ikke rot-modulens. Alle tre repoene droppet
+# lock-filer til fordel for ÉN kilde til sannhet: `required_providers` i rot-
+# konfigurasjonen, pinnet på patch-nivå (`~> 5.4.0`, tre segmenter). Se
+# versions.tf for hva dette koster.
+#
+# Merk: `.terraform/` med skråstrek dekker IKKE `.terraform.lock.hcl` — filen
+# ligger ved siden av katalogen, ikke inni den. Det er derfor lock-filene stadig
+# dukket opp igjen. Mønsteret under er uten skråstrek og treffer i alle kataloger.
 # ------------------------------------------------------------------------------
-modules/**/.terraform.lock.hcl
-examples/**/.terraform.lock.hcl
-bootstrap/.terraform.lock.hcl
+.terraform.lock.hcl
 
 # ==============================================================================
 # Credentials og miljø

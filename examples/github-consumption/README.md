@@ -142,7 +142,7 @@ runs skip that and connect to the existing state.
 Edit the `?ref=` in `main.tf`:
 
 ```hcl
-source = "github.com/patrickthor/terraform-azuread-access-vending-development//modules/access-vending?ref=v0.2.0"
+source = "github.com/patrickthor/terraform-azuread-access-vending-development//modules/access-vending?ref=v1.1.0"
 ```
 
 Terraform requires `source` to be a literal string, so this cannot be a variable
