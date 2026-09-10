@@ -642,6 +642,11 @@ variable "access_scopes" {
     #
     # pim_for_groups does not have this problem: there the policy is keyed on
     # (group_id, assignment_type), and with one group per role it is unique.
+    #
+    # The usual reason someone trips this is NOT a broken configuration — it is
+    # wanting two audiences to hold the same role. That is a packaging concern and
+    # belongs in repo 2 as two access packages over one group, so the error message
+    # leads with that rather than with permanent_access.
     condition = length(distinct(flatten([
       for scope in values(var.access_scopes) : [
         for role in values(scope.roles) : "${coalesce(scope.scope_id, "")}|${role.azure_role}"
@@ -653,7 +658,15 @@ variable "access_scopes" {
         if role.jit_mechanism == "azure_pim" && !role.permanent_access
       ]
     ]))
-    error_message = "Two eligible azure_pim roles cannot have the same azure_role on the same subscription — the activation policy is keyed on (scope, role) and they would collide. Note that this applies across scope keys if they share the same scope_id. Set permanent_access = true on one of them, or merge them."
+    error_message = <<-EOT
+      Two eligible azure_pim roles cannot have the same azure_role on the same subscription. Azure keys the activation policy on (scope, role), so the second one collides with the first. This also applies across different scope keys when they share the same scope_id.
+
+      IF YOU WANT TWO AUDIENCES TO HAVE THE SAME ROLE, this is the wrong place to express it. Keep ONE role here and build TWO access packages over its group in the access-packages repo. Who may request access is a packaging concern; this repo only defines which access grants exist.
+
+      Duplicating the role would not achieve the differentiation anyway. Azure allows a single activation policy per (scope, role), so the two copies cannot have different MFA, activation duration or approvers — whichever was written last would govern both audiences, silently.
+
+      If the two really are different access, give them different azure_role values or put them on different subscriptions. Setting permanent_access = true on one also clears the collision, but only because a permanent binding has no activation policy at all — that removes the just-in-time gate, so do not reach for it merely to silence this message.
+    EOT
   }
 }
 
