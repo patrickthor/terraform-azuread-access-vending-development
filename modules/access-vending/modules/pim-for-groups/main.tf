@@ -115,3 +115,45 @@ resource "azuread_privileged_access_group_eligibility_schedule" "this" {
     azuread_group_role_management_policy.this,
   ]
 }
+
+# ------------------------------------------------------------------------------
+# Eligibility carrier — a GROUP as eligible member
+#
+# This is what makes an access package able to grant anything at all on a
+# pim_for_groups role. The provider cannot set access_type = "EligibleMember" on
+# an access package resource role, so a package attached directly to THIS group
+# grants nothing and the role has to be excluded and done by hand in the portal.
+#
+# Instead the package grants plain Member on a separate plain group, and that
+# group is an eligible member here. Entra then lets each member activate their
+# OWN membership in this group — the carrier as a whole never becomes active.
+#
+# PERMANENT, deliberately. The carrier link is infrastructure: it is created once
+# and must outlive every package assignment built on top of it. If it expired,
+# every access package over the carrier would keep granting membership in the
+# carrier while silently granting no path into this group, and nothing would
+# error. The user lifecycle lives on the package assignment, not here.
+#
+# Same ordering as above and for the same reason: writing the activation policy
+# is what onboards the group to PIM for Groups, and until that has happened the
+# platform does not accept eligibility against it.
+# ------------------------------------------------------------------------------
+resource "azuread_privileged_access_group_eligibility_schedule" "carrier" {
+  # Keyed on the STATIC label, not on the object ID. The carrier group is created
+  # in the same apply, so its object ID is unknown at plan time, and a for_each
+  # whose KEYS are unknown fails with "Invalid for_each argument". The label comes
+  # from configuration; only the value is an apply-time result.
+  for_each = var.eligible_member_group_object_ids
+
+  group_id        = var.group_object_id
+  principal_id    = each.value
+  assignment_type = var.assignment_type
+
+  permanent_assignment = true
+  justification        = "Eligibility carrier group. Access packages grant Member on the carrier; members activate their own membership here. Managed by Terraform."
+
+  depends_on = [
+    time_sleep.group_propagation,
+    azuread_group_role_management_policy.this,
+  ]
+}

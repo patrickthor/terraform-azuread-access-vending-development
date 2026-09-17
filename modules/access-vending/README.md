@@ -126,6 +126,54 @@ object ID that no longer exists. The plan shows only the group, not the loss.
 If a job function needs multiple roles simultaneously, bundle it in the access
 package layer — not by putting multiple roles on one group.
 
+### The full naming contract
+
+| Name | Created for | PIM-managed | Carries access |
+| --- | --- | --- | --- |
+| `{cloud}-{scope}-{role}` | every role | only `pim_for_groups` | yes |
+| `{cloud}-{scope}-{role}-eligible` | every `pim_for_groups` role | no | **never** |
+| `{cloud}-{scope}-approvers` | scopes with a `dual` role | no | no |
+
+Both `approvers` and any role key ending in `-eligible` are rejected as role keys,
+because either would generate a group name that collides with one of the above.
+
+### `-eligible` carrier groups
+
+Every `pim_for_groups` role gets a second, plain group. The access package attaches
+to **that** one:
+
+```
+access package --Member--> azure-{sub}-reader-eligible   (plain carrier)
+                                     |
+                               eligible member of
+                                     v
+                           azure-{sub}-reader            (PIM-managed)
+                                     |
+                        user activates their OWN membership
+```
+
+It exists because the `azuread` provider cannot set `access_type =
+"EligibleMember"` on an access package resource role. A package pointed straight at
+the PIM-managed group grants **nothing** — the role gets excluded and left as a
+manual portal step, and a user approved for the package receives no membership.
+
+The just-in-time gate is unaffected. The carrier holds no access, so being a member
+of it grants nothing on its own; the user still activates in PIM and still passes
+approval, MFA and the maximum duration. Entra documents the nesting: a user who is
+an active member of group A, where A is an eligible member of group B, can activate
+their own membership in B — and only their own. See
+[PIM for Groups, "Privileged Identity Management and group nesting"](https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/concept-pim-for-groups).
+
+> **Never bind anything to a `-eligible` group.** No Azure RBAC, no SCIM
+> provisioning, no app role, no directory role. If you do, every member holds
+> standing access to the target cloud, PIM is bypassed, and nothing fails — not the
+> plan, not the apply, not the portal. `-eligible` groups are deliberately absent
+> from `target_cloud_bindings`, which is the SCIM work list.
+
+Note the length interaction: the suffix adds 9 characters and group names are capped
+at 64, so `{cloud}-{scope}-{role}` has an effective budget of 55 for
+`pim_for_groups` roles.
+
 ---
 
 ## Approval follows a role, not a person

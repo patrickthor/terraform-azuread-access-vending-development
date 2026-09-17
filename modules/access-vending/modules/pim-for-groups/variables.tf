@@ -132,6 +132,46 @@ variable "eligible_member_user_principal_names" {
   default     = []
 }
 
+variable "eligible_member_group_object_ids" {
+  description = <<-EOT
+    GROUPS that should be eligible members of this group.
+
+    A MAP, keyed on a STATIC label, whose values are the group object IDs. It is a
+    map rather than a list for a specific reason: the object ID of a group created
+    in the same apply is unknown at plan time, and for_each needs its KEY SET
+    known at plan time. `toset([unknown])` fails with "Invalid for_each argument"
+    because in a set the values ARE the keys. With a map, the label is static in
+    configuration and only the value is an apply-time result.
+
+    Same rule as the machine contract in the root: keys from configuration, values
+    may be unknown.
+
+    This is the eligibility-carrier mechanism, and it is structural rather than a
+    per-user grant. `principal_id` on
+    azuread_privileged_access_group_eligibility_schedule is documented as
+    accepting "either a user or a group", and Entra supports the nesting:
+
+      "If a user is an active member of Group A, and Group A is an eligible
+       member of Group B, the user can activate their membership in Group B.
+       This activation is only for the user that requested the activation for,
+       it doesn't mean that the entire Group A becomes an active member of
+       Group B."
+      — learn.microsoft.com/entra/id-governance/privileged-identity-management/concept-pim-for-groups,
+        "Privileged Identity Management and group nesting"
+
+    So an access package can grant plain Member on the carrier — which the
+    azuread provider CAN set — and each member still has to activate their own
+    membership here, with the approval, MFA and duration rules from the policy.
+
+    Eligible nesting works even when one of the groups is role-assignable. Only
+    ACTIVE nesting is forbidden for role-assignable groups.
+
+    These assignments are created as PERMANENT. See the resource comment.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "eligible_permanent" {
   description = "Whether the eligible assignments should be permanent (no expiry)."
   type        = bool

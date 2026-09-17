@@ -263,6 +263,10 @@ locals {
   #
   # The name is READ BACK from the submodules rather than recalculated here. The
   # naming formula lives in one place only.
+  # All three branches must produce the SAME object type. merge() over maps with
+  # differing object types produces inconsistent values, so pim_group_name and
+  # pim_group_object_id are present in every branch and null where they do not
+  # apply.
   group_facts = merge(
     merge([
       for scope_key, scope in local.azure_pim_scopes : {
@@ -270,24 +274,48 @@ locals {
           group_name      = module.azure_pim_access[scope_key].group_names[role_key]
           group_object_id = module.azure_pim_access[scope_key].group_object_ids[role_key]
           access_type     = "Member"
+
+          # No carrier: azure_pim membership is active and it is the ROLE that is
+          # activated in PIM for Azure Resources.
+          pim_group_name      = null
+          pim_group_object_id = null
         }
       }
     ]...),
+
+    # CONTRACT v2 — group_name and group_object_id here point at the CARRIER, not
+    # at the PIM-managed group. That is a change of MEANING for pim_for_groups
+    # roles, and is why contract_version went to 2.
+    #
+    # The carrier is what an access package can actually attach to: the provider
+    # cannot set access_type = "EligibleMember", so a package pointed at the
+    # PIM-managed group granted nothing. The PIM-managed group is still reported,
+    # as pim_group_name / pim_group_object_id, for reporting and for the
+    # consumer's expiry-ceiling logic.
     merge([
       for scope_key, scope in local.pim_group_scopes : {
         for role_key in keys(scope.roles) : "${scope_key}--${role_key}" => {
-          group_name      = module.pim_group_access[scope_key].group_names[role_key]
-          group_object_id = module.pim_group_access[scope_key].group_object_ids[role_key]
+          group_name      = module.pim_group_access[scope_key].carrier_group_names[role_key]
+          group_object_id = module.pim_group_access[scope_key].carrier_group_object_ids[role_key]
           access_type     = module.pim_group_access[scope_key].access_package_access_type[role_key]
+
+          pim_group_name      = module.pim_group_access[scope_key].group_names[role_key]
+          pim_group_object_id = module.pim_group_access[scope_key].group_object_ids[role_key]
         }
       }
     ]...),
+
     merge([
       for scope_key, scope in local.entra_role_scopes : {
         for role_key in keys(scope.roles) : "${scope_key}--${role_key}" => {
           group_name      = module.entra_role_access[scope_key].group_names[role_key]
           group_object_id = module.entra_role_access[scope_key].group_object_ids[role_key]
           access_type     = module.entra_role_access[scope_key].access_package_access_type[role_key]
+
+          # No carrier: membership is active and it is the directory ROLE that is
+          # activated in PIM for Entra roles.
+          pim_group_name      = null
+          pim_group_object_id = null
         }
       }
     ]...),
@@ -307,6 +335,11 @@ locals {
       scope = entry.scope_key
       role  = entry.role_key
 
+      # THE GROUP THE ACCESS PACKAGE ATTACHES TO.
+      #
+      # v2: for pim_for_groups this is the "-eligible" CARRIER, not the
+      # PIM-managed group. The PIM-managed group is reported separately below.
+      # For azure_pim and entra_role it is unchanged.
       group_name      = local.group_facts[entry.composite].group_name
       group_object_id = local.group_facts[entry.composite].group_object_id
 
@@ -314,7 +347,19 @@ locals {
       # access_type: defaulting to "Member" turns JIT eligibility into standing
       # membership, the apply succeeds, the portal looks right, and the user
       # silently holds access they should have had to activate for.
+      #
+      # v2: "Member" for pim_for_groups too, because it is now granted on the
+      # carrier. That is not a downgrade — the carrier holds no access and is an
+      # eligible member of the PIM-managed group, so activation, approval and MFA
+      # all still apply.
       access_type = local.group_facts[entry.composite].access_type
+
+      # The PIM-managed group, for pim_for_groups only; null for the other two
+      # mechanisms. Reporting plus the consumer's expiry-ceiling logic — the
+      # ceiling in max_assignment_days comes from THIS group's
+      # active_assignment_expire_after, not from the carrier.
+      pim_group_name      = local.group_facts[entry.composite].pim_group_name
+      pim_group_object_id = local.group_facts[entry.composite].pim_group_object_id
 
       jit_mechanism    = entry.mechanism
       permanent_access = entry.role.permanent_access

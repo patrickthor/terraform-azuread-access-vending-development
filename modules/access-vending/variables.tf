@@ -513,6 +513,44 @@ variable "access_scopes" {
   }
 
   validation {
+    # Every pim_for_groups role gets a second, plain "eligibility carrier" group
+    # named {cloud}-{scope}-{role}-eligible. A role key ENDING in "-eligible"
+    # would generate a name that collides with another role's carrier: role key
+    # "reader" produces the carrier {cloud}-{scope}-reader-eligible, and a role
+    # key "reader-eligible" produces the PIM-managed group with that exact name.
+    #
+    # The collision is worth rejecting rather than detecting, because the two
+    # groups are opposites: one is PIM-managed and carries the access, the other
+    # is plain and must carry none. prevent_duplicate_names would fail the apply
+    # anyway, but on a name clash rather than on the reason for it.
+    condition = alltrue(flatten([
+      for scope in values(var.access_scopes) : [
+        for role_key in keys(scope.roles) : !endswith(role_key, "-eligible")
+      ]
+    ]))
+    error_message = "Role keys cannot end in \"-eligible\". That suffix is reserved: every pim_for_groups role gets a plain eligibility-carrier group named {cloud}-{scope}-{role}-eligible, and a role key ending in it would produce a group name identical to another role's carrier — with opposite meanings, since the carrier must never hold access."
+  }
+
+  validation {
+    # The carrier's eligibility on the PIM-managed group is created as PERMANENT,
+    # because it is structural: it must outlive every access package assignment
+    # built on top of it.
+    #
+    # eligible_assignment_expiration_required = true tells the policy that
+    # eligible assignments MUST have an expiry, which makes the permanent carrier
+    # assignment invalid. The failure surfaces at apply, from Graph, against the
+    # eligibility schedule rather than against this field — so it is rejected here
+    # instead.
+    condition = alltrue(flatten([
+      for scope in values(var.access_scopes) : [
+        for role in values(scope.roles) :
+        role.jit_mechanism == "pim_for_groups" ? coalesce(role.eligible_assignment_expiration_required, false) == false : true
+      ]
+    ]))
+    error_message = "eligible_assignment_expiration_required cannot be true for pim_for_groups. Each of these roles has a plain eligibility-carrier group that is a PERMANENT eligible member of the PIM-managed group, and requiring expiry on eligible assignments makes that permanent assignment invalid — the apply fails from Graph against the eligibility schedule. Expiry of a user's access belongs on the access package assignment in repo 2, which is what max_assignment_days in the contract is for."
+  }
+
+  validation {
     # The field has been MOVED from role level to scope level. This validation
     # exists only to say so explicitly: without it Terraform would silently drop
     # the attribute, and an old configuration would get a different approver than

@@ -52,19 +52,24 @@ machine-readable input. Both are this object.
 
 ```hcl
 object({
-  contract_version = number   # 1
+  contract_version = number   # 2
 
   # ---- keyed "{scope}--{role}" ------------------------------------------------
   roles = map(object({
     scope               = string
     role                = string
-    group_name          = string
-    group_object_id     = string
-    access_type         = string           # "Member" | "EligibleMember"
+    group_name          = string           # the group the PACKAGE attaches to
+    group_object_id     = string           # for pim_for_groups this is the CARRIER
+    access_type         = string           # "Member" | "Owner"
     jit_mechanism       = string           # "azure_pim" | "pim_for_groups" | "entra_role"
     permanent_access    = bool
     target              = string           # the RBAC role / target-cloud role / directory role
     max_assignment_days = optional(number) # ceiling for the package assignment; null = none
+
+    # pim_for_groups ONLY; null for azure_pim and entra_role. The PIM-managed
+    # group behind the carrier. Reporting, and the source of max_assignment_days.
+    pim_group_name      = optional(string)
+    pim_group_object_id = optional(string)
   }))
 
   # ---- keyed "{scope}" --------------------------------------------------------
@@ -107,16 +112,21 @@ apply`, in repo 2, for a change made in repo 1.
 
 ### `access_type` is repo 1's answer, not repo 2's guess
 
-| `jit_mechanism` | `access_type` | What the user activates |
-|---|---|---|
-| `azure_pim` | `Member` | the **role**, in PIM for Azure Resources |
-| `pim_for_groups` | `EligibleMember` | the **membership**, in PIM for Groups |
-| `entra_role` | `Member` | the **directory role**, in PIM for Entra roles |
+| `jit_mechanism` | `access_type` | Attached to | What the user activates |
+|---|---|---|---|
+| `azure_pim` | `Member` | the group | the **role**, in PIM for Azure Resources |
+| `pim_for_groups` | `Member` | the **carrier** group | the **membership** in the PIM group, in PIM for Groups |
+| `entra_role` | `Member` | the group | the **directory role**, in PIM for Entra roles |
 
-Repo 2 must never default a missing `access_type`. Defaulting it to `Member` turns
-just-in-time eligibility into standing membership: the apply succeeds, the portal looks
-right, and the user silently holds access they should have had to activate for. A
-missing key is a hard failure.
+Repo 2 must never default a missing `access_type`. Defaulting it turns just-in-time
+eligibility into standing membership: the apply succeeds, the portal looks right, and the
+user silently holds access they should have had to activate for. A missing key is a hard
+failure.
+
+`access_type` is `Member` for all three mechanisms as of contract v2. That does **not**
+mean the JIT gate is gone for `pim_for_groups` — it means the package attaches to the
+plain carrier group, which holds no access and is an eligible member of the PIM-managed
+group. See "Eligibility carriers" below.
 
 ### `max_assignment_days` closes the expiry-drift trap
 
@@ -188,27 +198,63 @@ builds the Graph role scope as `OriginId = "{access_type}_{group_object_id}"` wi
 `DisplayName = access_type`, and the sole barrier is a `StringInSlice` allowlist on the
 schema field. There is no missing API path and no missing resource — it is one line.
 
-Consequences, in the order worth pursuing them:
+This is **solved as of contract v2**, and not by downgrading anything.
 
-1. **Verify licensing first.** Eligible group membership in access packages requires
-   Entra ID Governance or Entra Suite, **not P2 alone**. If the platform rejects it,
-   every workaround below is a dead end including the manual portal step. Run repo 2's
-   `scripts/verify-entitlement-management.sh` and record the result.
-2. **Default behaviour: exclude, register, report.** Roles whose `access_type` is
-   `EligibleMember` get their *catalog* association created but not their *package*
-   association, and appear in repo 2's `excluded_resource_roles` and
-   `manual_steps_required` outputs. The manual portal step is then one click on an
-   already-registered resource.
-3. **A PR to `hashicorp/terraform-provider-azuread`** adding `"EligibleMember"` to the
-   allowlist is small and well-motivated. Worth opening regardless.
-4. **Microsoft's `msgraph` provider** (public preview) can POST the role scope directly
-   and is the IaC-native path until 3 lands. Treat as a spike: nobody here has tested
-   that specific POST. If it is adopted, it goes in repo 2 behind an explicit opt-in and
-   never becomes a required provider for the vending-only path.
+### Eligibility carriers
 
-Full IaC coverage by downgrading `EligibleMember` to `Member` stays available behind
-**two** flags (`manage_pim_for_groups_roles` + `acknowledge_m3_active_membership`),
-because the failure mode is invisible in both plan and portal.
+Repo 1 creates a SECOND, plain, non-PIM group for every `pim_for_groups` role, named
+`{cloud}-{scope}-{role}-eligible`, and makes it an **eligible member** of the
+PIM-managed group. The access package attaches to the carrier with plain `Member`, which
+the provider does support.
+
+```
+access package --Member--> {cloud}-{scope}-{role}-eligible   (plain carrier)
+                                      |
+                                eligible member of
+                                      v
+                           {cloud}-{scope}-{role}            (PIM-managed)
+                                      |
+                          user activates their OWN membership
+```
+
+This is documented platform behaviour, not a trick:
+
+> If a user is an active member of Group A, and Group A is an eligible member of Group B,
+> the user can activate their membership in Group B. This activation is only for the user
+> that requested the activation for, it doesn't mean that the entire Group A becomes an
+> active member of Group B.
+> — [PIM for Groups, "Privileged Identity Management and group nesting"](https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/concept-pim-for-groups)
+
+The same page confirms a group may be an eligible member even when one of the groups is
+role-assignable; only ACTIVE nesting is forbidden there. And
+`azuread_privileged_access_group_eligibility_schedule.principal_id` is documented as
+accepting "either a user or a group".
+
+The JIT gate is intact. The carrier holds no access, so carrier membership grants
+nothing by itself — the user still activates in PIM and still passes approval, MFA and
+the maximum duration from the PIM-managed group's policy.
+
+**THE CARRIER MUST CARRY NO ACCESS OF ITS OWN.** No Azure RBAC binding, no SCIM
+provisioning to the target cloud, no app role assignment, no directory role. Bind
+anything to it and every member holds standing access with PIM bypassed and nothing
+failing. Repo 1 keeps it out of `target_cloud_bindings` for exactly this reason, and that
+output is the SCIM work list — a group name ending in `-eligible` must never appear on
+it. Microsoft's own app-provisioning guidance describes the same split: an active "all
+users" group with no or low-privileged role, and an eligible "privileged group" carrying
+the privileged role.
+
+Still worth doing independently of this: **a PR to `hashicorp/terraform-provider-azuread`**
+adding `"EligibleMember"` to the allowlist. It would let a package attach straight to the
+PIM-managed group and make carriers unnecessary. It is one line in a `StringInSlice`.
+
+**Licensing still needs verifying**, and it is now the remaining risk rather than the
+provider: eligible group membership in access packages requires Entra ID Governance or
+Entra Suite, **not P2 alone**. Run repo 2's `scripts/verify-entitlement-management.sh`
+and record the result.
+
+**UNVERIFIED IN A TENANT.** Nobody has yet confirmed that a user who is an active member
+of the carrier actually sees the PIM-managed group as activatable in the PIM blade.
+Confirm that before presenting this as working.
 
 ### `entra_role` has no policy resource
 
@@ -256,7 +302,14 @@ privilege-escalation path.
 
 ## Versioning
 
-- `contract_version` is an integer in the contract object. It starts at `1`.
+- `contract_version` is an integer in the contract object. It started at `1`; it is now
+  `2`.
+- **v1 → v2:** every `pim_for_groups` role gained an eligibility carrier.
+  `group_name`/`group_object_id` now point at the carrier rather than the PIM-managed
+  group, `access_type` became `Member` instead of `EligibleMember`, and
+  `pim_group_name`/`pim_group_object_id` were added. `group_object_id` changing MEANING
+  is what forced the bump — the new fields alone would have been additive.
+  `azure_pim` and `entra_role` roles are unaffected.
 - Repo 2 validates it and fails with a message naming the version it supports and the
   version it received. Never `try()` around a contract field to paper over a mismatch —
   that is how a missing `access_type` becomes standing access.

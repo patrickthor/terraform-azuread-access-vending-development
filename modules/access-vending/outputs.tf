@@ -426,13 +426,45 @@ output "contract" {
     Do NOT wrap contract fields in try() on the consuming side. A missing
     access_type must fail loudly: papering over it is how just-in-time
     eligibility silently becomes standing membership.
+
+    ---------------------------------------------------------------------------
+    VERSION 2 — group_object_id CHANGED MEANING for pim_for_groups roles.
+
+    Before v2 those roles reported access_type = "EligibleMember" and pointed at
+    the PIM-managed group. The azuread provider validates
+    azuread_access_package_resource_package_association.access_type client-side
+    to Member and Owner only, so that could never be applied: repo 2 excluded
+    those roles and left them as a manual portal step, and a user approved for
+    the package received no membership whatsoever.
+
+    From v2, every pim_for_groups role also gets a plain "-eligible" carrier
+    group, and:
+
+      group_name / group_object_id   the CARRIER — what the package attaches to
+      access_type                    "Member" (was "EligibleMember")
+      pim_group_name / _object_id    NEW. The PIM-managed group.
+
+    The carrier is an eligible member of the PIM-managed group, so a member of
+    the carrier still activates their own membership under the full policy —
+    approval, MFA and maximum duration all still apply. Documented Entra
+    behaviour, not a workaround: see "Privileged Identity Management and group
+    nesting" in the PIM for Groups concept doc.
+
+    azure_pim and entra_role roles are UNCHANGED, and their pim_group_* fields
+    are null.
+
+    max_assignment_days is unchanged and still governs. It continues to come
+    from the PIM-managed group's active_assignment_expire_after — not the
+    carrier's, which has no activation policy at all.
+    ---------------------------------------------------------------------------
   EOT
 
   value = {
     # A LITERAL, never derived — it has to be greppable across both repos.
     # Additive fields do not bump it. Removing, renaming, or changing the meaning
-    # of a field does.
-    contract_version = 1
+    # of a field does — and v2 changed what group_object_id MEANS for
+    # pim_for_groups, which is exactly the case this field exists for.
+    contract_version = 2
 
     roles    = local.contract_roles
     scopes   = local.contract_scopes

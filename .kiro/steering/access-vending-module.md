@@ -126,6 +126,13 @@ exist, since the label lives on the scope.
 These are already right. Changing them breaks repo 2 or the customer.
 
 - **`--` is reserved** and validated out of scope keys and role keys. Repo 2 splits on it.
+- **`-eligible` carrier groups must carry no access.** Every `pim_for_groups` role has a
+  plain `{cloud}-{scope}-{role}-eligible` group that is an eligible member of the
+  PIM-managed group, because the provider cannot set `access_type = "EligibleMember"` on
+  an access package resource role. Bind RBAC, SCIM, an app role or a directory role to a
+  carrier and every member holds standing access with PIM bypassed and nothing failing.
+  Keep carriers out of `target_cloud_bindings` — that output is the SCIM work list. Role
+  keys ending in `-eligible` are rejected so a role cannot generate a colliding name.
 - **Role key `approvers` is reserved**, because the approver group is
   `{cloud}-{scope}-approvers` and a role with that key would collide. This is also what
   guarantees `"{scope}--approvers"` is free as a resource-role label in repo 2.
